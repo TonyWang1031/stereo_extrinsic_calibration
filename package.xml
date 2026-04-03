@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>stereo_extrinsic_calibration</name>
+  <version>0.1.0</version>
+  <description>High-precision online markerless stereo extrinsic calibration</description>
+  <maintainer email="user@todo.todo">User</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>image_transport</depend>
+  <depend>message_filters</depend>
+
+  <export></export>
+</package>
