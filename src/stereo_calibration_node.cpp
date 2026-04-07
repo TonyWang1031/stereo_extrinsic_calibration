@@ -1,93 +1,150 @@
+//
+// ROS节点: 在线双目外参标定
+// 订阅左右图像，执行特征匹配和标定，发布外参TF和极线误差
+//
+
 #include <ros/ros.h>
+#include <ros/package.h>
 #include <sensor_msgs/Image.h>
+#include <std_msgs/Float64.h>
+#include <geometry_msgs/TransformStamped.h>
 #include <cv_bridge/cv_bridge.h>
 #include <message_filters/subscriber.h>
+#include <message_filters/time_synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
-#include <message_filters/synchronizer.h>
+#include <tf2_ros/transform_broadcaster.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
 
-#include "stereo_extrinsic_calibration/feature_matcher.h"
-#include "stereo_extrinsic_calibration/stereo_calibrator.h"
+#include "stereo_calibration.h"
+#include "stereo_calibration_param.h"
 
-using namespace stereo_calibration;
-
-class StereoCalibrationNode {
+class StereoCalibrationNode
+{
 public:
-    StereoCalibrationNode(ros::NodeHandle& nh) {
-        // 读取相机内参
-        cv::Mat K_left = (cv::Mat_<double>(3, 3) <<
-            500, 0, 320,
-            0, 500, 240,
-            0, 0, 1);
-        cv::Mat K_right = K_left.clone();
+    StereoCalibrationNode(ros::NodeHandle &nh, ros::NodeHandle &pnh)
+    {
+        // 加载配置文件路径
+        std::string configFile;
+        pnh.param<std::string>("config_file", configFile,
+                               ros::package::getPath("stereo_extrinsic_calibration") + "/config/camera_params.yaml");
 
-        // 从ROS参数服务器读取内参
-        std::vector<double> k_left_vec, k_right_vec;
-        if (nh.getParam("K_left", k_left_vec) && k_left_vec.size() == 9) {
-            K_left = cv::Mat(3, 3, CV_64F, k_left_vec.data()).clone();
+        if (!StereoCalibrationParam::LoadFromYamlFile(configFile, &Param))
+        {
+            ROS_ERROR("Failed to load config file: %s", configFile.c_str());
+            return;
         }
-        if (nh.getParam("K_right", k_right_vec) && k_right_vec.size() == 9) {
-            K_right = cv::Mat(3, 3, CV_64F, k_right_vec.data()).clone();
-        }
+        ROS_INFO("Loaded config from: %s", configFile.c_str());
 
-        matcher_ = std::make_unique<FeatureMatcher>(2000);
-        calibrator_ = std::make_unique<StereoCalibrator>(K_left, K_right);
+        // 发布极线误差
+        ErrorPub = nh.advertise<std_msgs::Float64>("stereo_calibration/epipolar_error", 10);
 
-        // 订阅双目图像话题
-        sub_left_.subscribe(nh, "/camera/left/image_raw", 1);
-        sub_right_.subscribe(nh, "/camera/right/image_raw", 1);
+        // 订阅左右图像（近似时间同步）
+        LeftSub.subscribe(nh, "/camera/left/image_raw", 1);
+        RightSub.subscribe(nh, "/camera/right/image_raw", 1);
 
-        sync_ = std::make_unique<Sync>(SyncPolicy(10), sub_left_, sub_right_);
-        sync_->registerCallback(&StereoCalibrationNode::imageCallback, this);
+        typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> SyncPolicy;
+        Sync.reset(new message_filters::Synchronizer<SyncPolicy>(SyncPolicy(10), LeftSub, RightSub));
+        Sync->registerCallback(boost::bind(&StereoCalibrationNode::ImageCallback, this, _1, _2));
 
-        ROS_INFO("Stereo extrinsic calibration node started");
+        ROS_INFO("Stereo calibration node started.");
     }
 
 private:
-    void imageCallback(const sensor_msgs::ImageConstPtr& msg_left,
-                       const sensor_msgs::ImageConstPtr& msg_right) {
-        cv::Mat img_left = cv_bridge::toCvShare(msg_left, "bgr8")->image;
-        cv::Mat img_right = cv_bridge::toCvShare(msg_right, "bgr8")->image;
-
-        // 特征匹配
-        std::vector<cv::Point2f> pts_left, pts_right;
-        int num_matches = matcher_->matchStereo(img_left, img_right, pts_left, pts_right);
-
-        if (num_matches < 20) {
-            ROS_WARN("Too few matches: %d", num_matches);
+    void ImageCallback(const sensor_msgs::ImageConstPtr &leftMsg,
+                        const sensor_msgs::ImageConstPtr &rightMsg)
+    {
+        // 转换图像
+        cv::Mat imageLeft, imageRight;
+        try
+        {
+            imageLeft = cv_bridge::toCvShare(leftMsg, "mono8")->image;
+            imageRight = cv_bridge::toCvShare(rightMsg, "mono8")->image;
+        }
+        catch (cv_bridge::Exception &e)
+        {
+            ROS_ERROR("cv_bridge exception: %s", e.what());
             return;
         }
 
-        // 添加帧进行标定
-        if (calibrator_->addFrame(pts_left, pts_right)) {
-            cv::Mat R = calibrator_->getRotation();
-            cv::Mat t = calibrator_->getTranslation();
-            double err = calibrator_->getReprojectionError();
+        // 特征匹配
+        std::vector<cv::Point2f> matchedPointsLeft, matchedPointsRight;
+        Calibrator.FeatureMatching(imageLeft, imageRight, matchedPointsLeft, matchedPointsRight);
 
-            ROS_INFO("Calibration updated. Reprojection error: %.4f px", err);
-            ROS_INFO("R = [%.4f %.4f %.4f; %.4f %.4f %.4f; %.4f %.4f %.4f]",
-                     R.at<double>(0,0), R.at<double>(0,1), R.at<double>(0,2),
-                     R.at<double>(1,0), R.at<double>(1,1), R.at<double>(1,2),
-                     R.at<double>(2,0), R.at<double>(2,1), R.at<double>(2,2));
-            ROS_INFO("t = [%.4f %.4f %.4f]",
-                     t.at<double>(0), t.at<double>(1), t.at<double>(2));
+        if (matchedPointsLeft.size() < 20)
+        {
+            ROS_WARN("Not enough matched points: %zu", matchedPointsLeft.size());
+            return;
         }
+
+        // 设置匹配点并执行标定
+        Param.SetMatchedPoints(matchedPointsLeft, matchedPointsRight);
+        Calibrator.SetPriorParameter(Param);
+        Calibrator.Calibrate();
+
+        // 多帧融合
+        Calibrator.CalibrateMultiFrame();
+
+        // 获取结果
+        StereoCalibrationParam posteriorParam;
+        Calibrator.GetPosteriorParameter(posteriorParam);
+
+        Eigen::Isometry3d extrinsic;
+        double epipolarError;
+        posteriorParam.GetCalibrationResult(extrinsic, epipolarError);
+
+        // 发布极线误差
+        std_msgs::Float64 errorMsg;
+        errorMsg.data = epipolarError;
+        ErrorPub.publish(errorMsg);
+
+        // 发布TF (左相机到右相机)
+        geometry_msgs::TransformStamped tfMsg;
+        tfMsg.header.stamp = leftMsg->header.stamp;
+        tfMsg.header.frame_id = "camera_left";
+        tfMsg.child_frame_id = "camera_right";
+
+        Eigen::Matrix3d R = extrinsic.rotation();
+        Eigen::Vector3d t = extrinsic.translation();
+
+        tfMsg.transform.translation.x = t.x();
+        tfMsg.transform.translation.y = t.y();
+        tfMsg.transform.translation.z = t.z();
+
+        // 旋转矩阵转四元数
+        Eigen::Quaterniond q(R);
+        tfMsg.transform.rotation.x = q.x();
+        tfMsg.transform.rotation.y = q.y();
+        tfMsg.transform.rotation.z = q.z();
+        tfMsg.transform.rotation.w = q.w();
+
+        TfBroadcaster.sendTransform(tfMsg);
+
+        ROS_INFO("Epipolar error: %.6f, t: [%.4f, %.4f, %.4f]",
+                 epipolarError, t.x(), t.y(), t.z());
     }
 
-    std::unique_ptr<FeatureMatcher> matcher_;
-    std::unique_ptr<StereoCalibrator> calibrator_;
+    StereoCalibration Calibrator;
+    StereoCalibrationParam Param;
 
-    typedef message_filters::sync_policies::ApproximateTime<
-        sensor_msgs::Image, sensor_msgs::Image> SyncPolicy;
-    typedef message_filters::Synchronizer<SyncPolicy> Sync;
+    ros::Publisher ErrorPub;
+    tf2_ros::TransformBroadcaster TfBroadcaster;
 
-    message_filters::Subscriber<sensor_msgs::Image> sub_left_, sub_right_;
-    std::unique_ptr<Sync> sync_;
+    message_filters::Subscriber<sensor_msgs::Image> LeftSub;
+    message_filters::Subscriber<sensor_msgs::Image> RightSub;
+
+    typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> SyncPolicy;
+    std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> Sync;
 };
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv)
+{
     ros::init(argc, argv, "stereo_calibration_node");
-    ros::NodeHandle nh("~");
-    StereoCalibrationNode node(nh);
+    ros::NodeHandle nh;
+    ros::NodeHandle pnh("~");
+
+    StereoCalibrationNode node(nh, pnh);
+
     ros::spin();
     return 0;
 }

@@ -1,8 +1,11 @@
 <launch>
+  <!-- 配置文件路径参数 -->
+  <arg name="config_file" default="$(find stereo_extrinsic_calibration)/config/camera_params.yaml"/>
+
   <!-- 双目外参标定节点 -->
   <node name="stereo_calibration" pkg="stereo_extrinsic_calibration" type="stereo_calibration_node" output="screen">
-    <!-- 加载相机内参 -->
-    <rosparam command="load" file="$(find stereo_extrinsic_calibration)/config/camera_params.yaml"/>
+    <!-- 传入配置文件路径 -->
+    <param name="config_file" value="$(arg config_file)"/>
 
     <!-- 重映射图像话题 -->
     <remap from="/camera/left/image_raw" to="/your_left_camera/image_raw"/>

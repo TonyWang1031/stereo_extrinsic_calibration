@@ -1,12 +1,53 @@
-# 相机内参配置示例
-# 请根据实际相机标定结果修改
+%YAML:1.0
 
-# 左相机内参矩阵 (3x3)
-K_left: [500.0, 0.0, 320.0,
-         0.0, 500.0, 240.0,
-         0.0, 0.0, 1.0]
-
-# 右相机内参矩阵 (3x3)
-K_right: [500.0, 0.0, 320.0,
+# 左相机内参矩阵
+CvInternalMatrixLeft: !!opencv-matrix
+  rows: 3
+  cols: 3
+  dt: d
+  data: [ 500.0, 0.0, 320.0,
           0.0, 500.0, 240.0,
-          0.0, 0.0, 1.0]
+          0.0, 0.0, 1.0 ]
+
+# 右相机内参矩阵
+CvInternalMatrixRight: !!opencv-matrix
+  rows: 3
+  cols: 3
+  dt: d
+  data: [ 500.0, 0.0, 320.0,
+          0.0, 500.0, 240.0,
+          0.0, 0.0, 1.0 ]
+
+# 左相机畸变系数 (k1, k2, p1, p2, k3)
+CvDistortionCoeffsLeft: !!opencv-matrix
+  rows: 1
+  cols: 5
+  dt: d
+  data: [ 0.0, 0.0, 0.0, 0.0, 0.0 ]
+
+# 右相机畸变系数 (k1, k2, p1, p2, k3)
+CvDistortionCoeffsRight: !!opencv-matrix
+  rows: 1
+  cols: 5
+  dt: d
+  data: [ 0.0, 0.0, 0.0, 0.0, 0.0 ]
+
+# 左相机外参矩阵（单位矩阵）
+CvExternalMatrixLeft: !!opencv-matrix
+  rows: 4
+  cols: 4
+  dt: d
+  data: [ 1.0, 0.0, 0.0, 0.0,
+          0.0, 1.0, 0.0, 0.0,
+          0.0, 0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0, 1.0 ]
+
+# 右相机外参矩阵（初始估计）
+CvExternalMatrixRight: !!opencv-matrix
+  rows: 4
+  cols: 4
+  dt: d
+  data: [ 1.0, 0.0, 0.0, 0.1,
+          0.0, 1.0, 0.0, 0.0,
+          0.0, 0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0, 1.0 ]
